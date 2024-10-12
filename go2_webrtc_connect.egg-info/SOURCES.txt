@@ -1,0 +1,17 @@
+README.md
+setup.py
+go2_webrtc_connect.egg-info/PKG-INFO
+go2_webrtc_connect.egg-info/SOURCES.txt
+go2_webrtc_connect.egg-info/dependency_links.txt
+go2_webrtc_connect.egg-info/requires.txt
+go2_webrtc_connect.egg-info/top_level.txt
+go2_webrtc_driver/__init__.py
+go2_webrtc_driver/constants.py
+go2_webrtc_driver/encryption.py
+go2_webrtc_driver/multicast_scanner.py
+go2_webrtc_driver/unitree_auth.py
+go2_webrtc_driver/util.py
+go2_webrtc_driver/webrtc_audio.py
+go2_webrtc_driver/webrtc_datachannel.py
+go2_webrtc_driver/webrtc_driver.py
+go2_webrtc_driver/webrtc_video.py
