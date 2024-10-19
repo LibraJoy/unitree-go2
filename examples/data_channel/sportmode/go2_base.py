@@ -21,6 +21,7 @@ logging.basicConfig(level=logging.FATAL)
 class go2_base:
     def __init__(self):
         self.odom_pub = rospy.Publisher('/go2_odom', Odometry, queue_size=10)
+        # rospy.Subscriber('navigation/waypoints', PoseStamped, self.waypoint_callback)
         rospy.Subscriber("/move_base_simple/goal", PoseStamped, self.goal_pos_click_callback)
         self.current_state = None
         self.goal_pos = [0.0, 0.0, 0.0] # x, y, yaw
@@ -28,25 +29,27 @@ class go2_base:
         self.new_waypoint_received = False
 
         # start odom thread
-        self.odom_thread = threading.Thread(target=self.publish_odometry)
-        self.odom_thread.daemon = True  # Daemon thread to exit when the main program exits
-        self.odom_thread.start()
+        # self.odom_thread = threading.Thread(target=self.publish_odometry)
+        # self.odom_thread.daemon = True  # Daemon thread to exit when the main program exits
+        # self.odom_thread.start()
 
     async def async_init(self):
-    # Connect to the WebRTC service
+        # Connect to the WebRTC service
         self.conn = Go2WebRTCConnection(WebRTCConnectionMethod.Remote, serialNumber="B42D4000O1GBDIG2", username="fy.ya20026@gmail.com", password="Ykk1234?")
         await self.conn.connect()
         self.conn.datachannel.pub_sub.subscribe(RTC_TOPIC['LF_SPORT_MOD_STATE'], self.sportmodestatus_callback)
 
         # initialize motion
         await self.init_motion()
+        asyncio.create_task(self.publish_odometry())
 
     def sportmodestatus_callback(self, message):
         self.current_state = message['data']
 
-    def publish_odometry(self):
+    async def publish_odometry(self):
         while not rospy.is_shutdown():
             if self.current_state is None:
+                await asyncio.sleep(0.1)  # Sleep for a short duration to avoid busy-waiting
                 continue  # Avoid running if current_state is not set yet
 
             odom_msg = Odometry()
@@ -61,25 +64,28 @@ class go2_base:
 
             # Publish odometry message to ROS
             self.odom_pub.publish(odom_msg)
-            rospy.sleep(0.1)  # Sleep for a short duration to avoid busy-waiting
+            await asyncio.sleep(0.1)
 
     def waypoint_callback(self, msg):
         x = msg.pose.position.x
         y = msg.pose.position.y
-        z = msg.pose.position.z
+        # z = msg.pose.position.z
 
         self.goal_pos = [x, y, 0]
-        self.move_server()
+        # self.move_server()
+        asyncio.run_coroutine_threadsafe(self.move_server(),self.loop)
 
     def goal_pos_click_callback(self, msg):
         xgoal = msg.pose.position.x
         ygoal = msg.pose.position.y
-        zgoal = msg.pose.position.z
+        # zgoal = msg.pose.position.z
 
         self.new_waypoint_received = True
 
         self.goal_pos = [xgoal, ygoal, 0]
-        self.move_server()
+        print(f"New goal position received: {self.goal_pos}")
+        # self.move_server()
+        asyncio.run_coroutine_threadsafe(self.move_server(),self.loop)
 
     def get_desired_heading(self, dx, dy):
         position, quaternion = self.get_location()
@@ -109,7 +115,7 @@ class go2_base:
         print("Checking current motion mode...")
 
         # Get the current motion_switcher status
-        response = self.conn.datachannel.pub_sub.publish_request_new(
+        response = await self.conn.datachannel.pub_sub.publish_request_new(
             RTC_TOPIC["MOTION_SWITCHER"],
             {"api_id": 1001}
         )
@@ -119,10 +125,10 @@ class go2_base:
             current_motion_switcher_mode = data['name']
             print(f"Current motion mode: {current_motion_switcher_mode}")
 
-         # Switch to "normal" mode if not already
+        # Switch to "normal" mode if not already
         if current_motion_switcher_mode != "normal":
             print(f"Switching motion mode from {current_motion_switcher_mode} to 'normal'...")
-            self.conn.datachannel.pub_sub.publish_request_new(
+            await self.conn.datachannel.pub_sub.publish_request_new(
                 RTC_TOPIC["MOTION_SWITCHER"],
                 {
                     "api_id": 1002,
@@ -131,7 +137,7 @@ class go2_base:
             )
 
         print("StandUp ...")
-        self.conn.datachannel.pub_sub.publish_request_new(
+        await self.conn.datachannel.pub_sub.publish_request_new(
             RTC_TOPIC["SPORT_MOD"],
             {
                 #"api_id": SPORT_CMD["StandUp"] # StandUp is lock
@@ -139,15 +145,15 @@ class go2_base:
             }
         )
 
-        if self.current_state != None:
+        if self.current_state is not None:
             print(self.current_state['position'])
             imu_state = self.current_state['imu_state']
-            w,x,y,z = imu_state['quaternion']
-            r = R.from_quat([x,y,z,w])
+            w, x, y, z = imu_state['quaternion']
+            r = R.from_quat([x, y, z, w])
             print(r.as_euler('xyz'))
 
         print("Stop ... ")
-        self.conn.datachannel.pub_sub.publish_request_new(
+        await self.conn.datachannel.pub_sub.publish_request_new(
             RTC_TOPIC["SPORT_MOD"],
             {
                 "api_id": SPORT_CMD["StopMove"],
@@ -177,7 +183,7 @@ class go2_base:
             trajectory.append(data)
         return trajectory
 
-    def move_server(self):
+    async def move_server(self):
         rate = rospy.Rate(30)
         cycle = 0
         while not rospy.is_shutdown():
@@ -188,9 +194,9 @@ class go2_base:
                 print("Start position ...")
                 print(self.current_state['position'])
 
-            if abs(self.current_state['position'][0] - self.goal_pos[0]) < self.tol and abs(self.current_state['position'][1] - self.goal_pos[1]) < self.tol:
+            if abs(self.current_state['position'][0] - self.goal_pos[0]) < self.reach_tolerance and abs(self.current_state['position'][1] - self.goal_pos[1]) < self.reach_tolerance:
                 print("Reach goal, Stop ... ")
-                self.conn.datachannel.pub_sub.publish_request_new(
+                await self.conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
                     {
                         "api_id": SPORT_CMD["StopMove"],
@@ -200,7 +206,7 @@ class go2_base:
             else:
                 print("Trajectory ...")
                 trajectory = self.genTrajectory(self.goal_pos)
-                self.conn.datachannel.pub_sub.publish_request_new(
+                await self.conn.datachannel.pub_sub.publish_request_new(
                     RTC_TOPIC["SPORT_MOD"],
                     {
                         "api_id": SPORT_CMD["TrajectoryFollow"],
@@ -212,10 +218,17 @@ class go2_base:
             if self.current_state != None:
                 print("End position ...")
                 print(self.current_state['position'])
-            rate.sleep()  # Maintain 10Hz loop
+            rate.sleep()
+
+def signal_handler(sig, frame):
+    rospy.signal_shutdown('Ctrl+C pressed')
+    sys.exit(0)
 
 if __name__ == "__main__":
     rospy.init_node('go2_robot_controller', anonymous=True)
+    signal.signal(signal.SIGINT, signal_handler)
     loop = asyncio.get_event_loop()
     go2_base_agent = go2_base()
+    go2_base_agent.loop = loop
     loop.run_until_complete(go2_base_agent.async_init())
+    loop.run_forever()
